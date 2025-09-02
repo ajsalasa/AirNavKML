@@ -496,14 +496,74 @@ def run_streamlit_app():
     st.set_page_config(page_title="Airway Builder", layout="wide")
     st.title("🛫 Airway Builder (KML)")
 
+    # Carga inicial del maestro en memoria
+    if "master_df" not in st.session_state:
+        if os.path.isfile(MAESTRO_FILE):
+            st.session_state.master_df = pd.read_csv(MAESTRO_FILE)
+        else:
+            st.session_state.master_df = pd.DataFrame(
+                columns=["Aerovia", "Sec", "Name", "Lat", "Lon", "Alt"]
+            )
+
+    df = st.session_state.master_df
+    aerovia_options = sorted(df["Aerovia"].unique()) if not df.empty else []
+    selected = st.selectbox("Aerovía", aerovia_options) if aerovia_options else None
+
+    route_rows = []
+    if selected:
+        route_df = (
+            df[df["Aerovia"] == selected]
+            .sort_values("Sec")
+            .reset_index(drop=True)
+        )
+        edited = st.data_editor(
+            route_df[["Sec", "Name", "Lat", "Lon", "Alt"]],
+            num_rows="dynamic",
+            key="route_editor",
+        )
+
+        route_rows = []
+        for _, r in edited.sort_values("Sec").iterrows():
+            lat = _to_float(r.get("Lat"))
+            lon = _to_float(r.get("Lon"))
+            if lat is None or lon is None:
+                continue
+            alt_m = alt_to_meters(r.get("Alt"), "ft")
+            name = r.get("Name") or "WPT"
+            route_rows.append(
+                {"name": name, "lat": float(lat), "lon": float(lon), "alt_m": alt_m}
+            )
+
+        if st.button("Guardar aerovía"):
+            new_df = edited.copy()
+            new_df["Aerovia"] = selected
+            st.session_state.master_df = df[df["Aerovia"] != selected]
+            st.session_state.master_df = pd.concat(
+                [st.session_state.master_df, new_df], ignore_index=True
+            )
+            st.success("Aerovía guardada en memoria.")
+
     enr_pts = load_enr_csv(WAYPOINTS_FILE)
-    maestro_routes = load_maestro_csv(MAESTRO_FILE)
-    maestro_pts = [p for pts in maestro_routes.values() for p in pts]
 
     if st.button("Generar KML"):
-        route_dict = maestro_routes
+        routes_dict = {}
+        for aer, grp in st.session_state.master_df.groupby("Aerovia"):
+            lst = []
+            for _, r in grp.sort_values("Sec").iterrows():
+                lat = _to_float(r.get("Lat"))
+                lon = _to_float(r.get("Lon"))
+                if lat is None or lon is None:
+                    continue
+                alt_m = alt_to_meters(r.get("Alt"), "ft")
+                name = r.get("Name") or "WPT"
+                lst.append(
+                    {"name": name, "lat": float(lat), "lon": float(lon), "alt_m": alt_m}
+                )
+            routes_dict[aer] = lst
+
+        maestro_pts = [p for pts in routes_dict.values() for p in pts]
         points_lists = [enr_pts, maestro_pts]
-        kml = build_kml_multi(points_lists, route_dict)
+        kml = build_kml_multi(points_lists, routes_dict)
         st.success("KML generado.")
         st.download_button(
             "📥 Descargar KML",
