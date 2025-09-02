@@ -731,8 +731,26 @@ def run_streamlit_app():
             except Exception as e:
                 st.error(f"No se pudo guardar: {e}")
 
+def is_running_with_streamlit() -> bool:
+    """Return True when executed via ``streamlit run``.
+
+    Older versions of this script relied on the private attribute
+    ``st._is_running_with_streamlit``, which has been removed in recent
+    versions of Streamlit.  This helper uses the public runtime API when
+    available and gracefully falls back to ``False`` when the check cannot
+    be performed.
+    """
+
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        return get_script_run_ctx() is not None
+    except Exception:  # pragma: no cover - best effort; imports may fail
+        return False
+
+
 if __name__ == "__main__":
-    if st._is_running_with_streamlit:
+    if is_running_with_streamlit():
         run_streamlit_app()
     else:
         main_cli()
