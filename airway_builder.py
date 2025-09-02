@@ -362,6 +362,46 @@ def build_kml(points_rows, *, points_alt_mode="absolute", extrude_points=False,
     parts.append("</kml>")
     return "\n".join(parts)
 
+
+def google_maps_preview_html(route_rows, api_key):
+    """Genera HTML para previsualizar la ruta en Google Maps.
+
+    ``route_rows`` debe ser una lista de dicts con ``lat`` y ``lon``.
+    Se necesita una clave de API válida de Google Maps.
+    """
+
+    if not route_rows:
+        return ""
+
+    center_lat = sum(r["lat"] for r in route_rows) / len(route_rows)
+    center_lon = sum(r["lon"] for r in route_rows) / len(route_rows)
+    coords_js = ",".join(
+        f"{{lat:{r['lat']:.6f}, lng:{r['lon']:.6f}}}" for r in route_rows
+    )
+
+    html = f"""
+    <div id="map" style="height:400px;"></div>
+    <script src="https://maps.googleapis.com/maps/api/js?key={api_key}"></script>
+    <script>
+      const coords = [{coords_js}];
+      const map = new google.maps.Map(document.getElementById('map'), {{
+        zoom: 6,
+        center: {{lat: {center_lat:.6f}, lng: {center_lon:.6f}}},
+        mapTypeId: 'terrain'
+      }});
+      const route = new google.maps.Polyline({{
+        path: coords,
+        geodesic: true,
+        strokeColor: '#FF0000',
+        strokeOpacity: 1.0,
+        strokeWeight: 2
+      }});
+      route.setMap(map);
+      coords.forEach(p => new google.maps.Marker({{position: p, map: map}}));
+    </script>
+    """
+    return html
+
 def csv_to_kml_from_files(points_csv=None, routes_csv=None, output="salida.kml"):
     """Genera un KML tomando CSV de puntos y rutas directamente desde disco."""
     points_rows = []
@@ -542,6 +582,16 @@ def run_streamlit_app():
 
     # Actualizar estado con cambios del editor
     st.session_state.route_rows = edited.to_dict("records")
+
+    st.markdown("**Vista previa en Google Maps**")
+    gmaps_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if "GOOGLE_MAPS_API_KEY" in st.secrets:
+        gmaps_key = st.secrets["GOOGLE_MAPS_API_KEY"]
+    if st.session_state.route_rows and gmaps_key:
+        g_html = google_maps_preview_html(st.session_state.route_rows, gmaps_key)
+        st.components.v1.html(g_html, height=400)
+    elif st.session_state.route_rows:
+        st.info("Define la variable de entorno GOOGLE_MAPS_API_KEY para ver la previsualización.")
 
     st.subheader("3) Rumbo y corrección por tramo")
 
