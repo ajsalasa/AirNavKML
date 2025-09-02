@@ -13,6 +13,10 @@ import os
 import pandas as pd
 import streamlit as st
 
+# Rutas de datos predefinidas
+WAYPOINTS_FILE = "ENR4_4_CR_2025-05-07.csv"
+MAESTRO_FILE = "aerovias_maestro.csv"
+
 # =========================
 # Utilidades de coordenadas
 # =========================
@@ -492,264 +496,21 @@ def run_streamlit_app():
     st.set_page_config(page_title="Airway Builder", layout="wide")
     st.title("🛫 Airway Builder (KML)")
 
-    if "enr_points" not in st.session_state:
-        st.session_state.enr_points = load_enr_csv("ENR4_4_CR_2025-05-07.csv")
-    if "maestro_routes" not in st.session_state:
-        st.session_state.maestro_routes = load_maestro_csv("aerovias_maestro.csv")
+    enr_pts = load_enr_csv(WAYPOINTS_FILE)
+    maestro_routes = load_maestro_csv(MAESTRO_FILE)
+    maestro_pts = [p for pts in maestro_routes.values() for p in pts]
 
-    with st.sidebar:
-        st.header("Opciones generales")
-        pt_alt_mode = st.selectbox("Altitud puntos", ["absolute", "relativeToGround", "clampToGround"], index=0)
-        rt_alt_mode = st.selectbox("Altitud ruta",   ["absolute", "relativeToGround", "clampToGround"], index=0)
-        rt_color = st.color_picker("Color de ruta", value="#00A0FF")
-        rt_width = st.number_input("Ancho de ruta", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
-        extrude_pts = st.checkbox("Extrude puntos (línea al suelo)", value=False)
-        extrude_route = st.checkbox("Extrude ruta (pared al suelo)", value=False)
-
-    # Estado de la ruta
-    if "route_rows" not in st.session_state:
-        st.session_state.route_rows = []
-
-    # Maestro de aerovías en sesión
-    if "master_df" not in st.session_state:
-        st.session_state.master_df = pd.DataFrame(columns=["Aerovia","Sec","Name","Lat","Lon","Alt"])
-
-    data_dir = st.text_input("Carpeta de datos", value=".")
-
-    st.subheader("1) Construir ruta — puntos y altitudes")
-
-    st.markdown("**Agregar punto manualmente**")
-    name_in = st.text_input("Nombre/ID del punto", value="")
-    coord_in = st.text_input("Coordenada (lat,lon o DMS/compacto por separado)", value="")
-    lat_in = st.text_input("Lat (si no usas 'lat,lon')", value="")
-    lon_in = st.text_input("Lon (si no usas 'lat,lon')", value="")
-    alt_val = st.text_input("Altitud del punto (ej 7500, 2300 ft, FL120)", value="")
-    alt_units = st.selectbox("Unidades alt", ["ft", "m", "fl"], index=0)
-    if st.button("➕ Agregar punto manual"):
-        lat = None; lon = None
-        if coord_in.strip():
-            parsed = to_decimal(coord_in, "lat")
-            if isinstance(parsed, tuple) and parsed and parsed[0] == "PAIR":
-                lat, lon = parsed[1], parsed[2]
-            else:
-                st.warning("Usaste un solo valor en 'Coordenada'. Escribe 'lat,lon' o usa los campos Lat/Lon.")
-        if lat is None or lon is None:
-            lat = to_decimal(lat_in, "lat")
-            lon = to_decimal(lon_in, "lon")
-        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            st.error("Coordenadas inválidas.")
-        else:
-            alt_m = alt_to_meters(alt_val, alt_units)
-            st.session_state.route_rows.append({"name": name_in or "WPT", "lat": lat, "lon": lon, "alt_m": alt_m})
-
-    # Editor de la ruta (reordenable)
-    st.markdown("**Ruta (ordena filas para definir inicio→fin):**")
-    route_df = pd.DataFrame(st.session_state.route_rows, columns=["name","lat","lon","alt_m"])
-    edited = st.data_editor(
-        route_df,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="route_editor",
-    )
-
-    # Actualizar estado con cambios del editor
-    st.session_state.route_rows = edited.to_dict("records")
-
-    st.markdown("**Vista previa en Google Maps**")
-    gmaps_key = os.getenv("GOOGLE_MAPS_API_KEY")
-    if "GOOGLE_MAPS_API_KEY" in st.secrets:
-        gmaps_key = st.secrets["GOOGLE_MAPS_API_KEY"]
-    if st.session_state.route_rows and gmaps_key:
-        g_html = google_maps_preview_html(st.session_state.route_rows, gmaps_key)
-        st.components.v1.html(g_html, height=400)
-    elif st.session_state.route_rows:
-        st.info("Define la variable de entorno GOOGLE_MAPS_API_KEY para ver la previsualización.")
-
-    st.subheader("2) Rumbo y corrección por tramo")
-
-    use_rhumb = st.radio(
-        "Modo de cálculo para corrección del punto siguiente",
-        ["Loxodrómico (rumbo constante)", "Geodésico (gran círculo)"],
-        index=0, horizontal=True
-    )
-
-    legs_rows = []
-    rows = st.session_state.route_rows
-
-    for i in range(len(rows)-1):
-        a, b = rows[i], rows[i+1]
-        brg = initial_bearing_true(a["lat"], a["lon"], b["lat"], b["lon"])
-        d_gc_m = gc_distance_m(a["lat"], a["lon"], b["lat"], b["lon"])
-        d_rh_m = rhumb_distance_m(a["lat"], a["lon"], b["lat"], b["lon"])
-        d_nm = d_rh_m/1852.0 if use_rhumb.startswith("Loxo") else d_gc_m/1852.0
-
-        with st.expander(f"Tramo {i+1}: {a['name']} → {b['name']}"):
-            st.write(f"**Rumbo actual (°T):** {None if brg is None else round(brg,1)}")
-            st.write(f"**Distancia actual:** {d_nm:.2f} NM ({'loxodrómica' if use_rhumb.startswith('Loxo') else 'gran círculo'})")
-
-            desired = st.number_input(
-                f"Rumbo deseado (°T) — Tramo {i+1}",
-                min_value=0.0, max_value=360.0,
-                value=45.0, step=0.1, key=f"brg_des_{i}"
-            )
-
-            keep_dist = st.checkbox(f"Mantener distancia actual ({d_nm:.2f} NM) — Tramo {i+1}", value=True, key=f"keepd_{i}")
-            if keep_dist:
-                dist_nm = d_nm
-            else:
-                dist_nm = st.number_input(f"Distancia (NM) — Tramo {i+1}", min_value=0.0, value=d_nm, step=0.1, key=f"dist_{i}")
-
-            colA, colB = st.columns(2)
-            with colA:
-                if st.button(f"🔧 Corregir punto final del tramo {i+1}", key=f"fix_{i}"):
-                    dist_m = dist_nm * 1852.0
-                    if use_rhumb.startswith("Loxo"):
-                        new_lat, new_lon = destination_rhumb(a["lat"], a["lon"], desired, dist_m)
-                    else:
-                        new_lat, new_lon = destination_gc(a["lat"], a["lon"], desired, dist_m)
-                    # Mantener la altitud del punto final tal como estaba
-                    rows[i+1]["lat"] = float(new_lat)
-                    rows[i+1]["lon"] = float(new_lon)
-                    st.success(f"Tramo {i+1} corregido. Nuevo punto: lat={new_lat:.6f}, lon={new_lon:.6f}")
-
-            with colB:
-                st.caption("Nota: la altitud del punto final no cambia con esta corrección.")
-            
-    # Exportar
-    st.subheader("3) Exportar")
     if st.button("Generar KML"):
-        enr_pts = st.session_state.get("enr_points", [])
-        maestro_routes = st.session_state.get("maestro_routes", {})
-        maestro_pts = [p for pts in maestro_routes.values() for p in pts]
-        route_dict = {}
-        if rows:
-            route_dict["Ruta manual"] = rows
-        route_dict.update(maestro_routes)
-        points_lists = [enr_pts, maestro_pts, rows]
-        kml = build_kml_multi(
-            points_lists,
-            route_dict,
-            points_alt_mode=pt_alt_mode, extrude_points=extrude_pts,
-            route_alt_mode=rt_alt_mode,
-            route_color=rt_color, route_width=rt_width, extrude_route=extrude_route,
-        )
+        route_dict = maestro_routes
+        points_lists = [enr_pts, maestro_pts]
+        kml = build_kml_multi(points_lists, route_dict)
         st.success("KML generado.")
-        st.download_button("📥 Descargar KML", kml, file_name="aerovia.kml", mime="application/vnd.google-earth.kml+xml")
-
-    st.markdown("---")
-    st.subheader("4) Maestro de aerovías (append en memoria)")
-
-    colm1, colm2 = st.columns([2,1])
-
-    with colm1:
-        st.markdown("**Cargar CSV maestro (opcional)** — columnas esperadas: `Aerovia, Sec, Name (opcional), Lat, Lon, Alt`")
-        files_in_dir = [f for f in os.listdir(data_dir) if f.lower().endswith(".csv")] if os.path.isdir(data_dir) else []
-        selected_master = st.selectbox("Seleccionar maestro del directorio", ["(ninguno)"] + files_in_dir)
-        master_file = None
-        if selected_master != "(ninguno)":
-            try:
-                mdf = pd.read_csv(os.path.join(data_dir, selected_master))
-                needed = {"Aerovia","Sec","Lat","Lon","Alt"}
-                if not needed.issubset(set(mdf.columns)):
-                    st.error("El CSV maestro debe contener al menos: Aerovia, Sec, Lat, Lon, Alt (Name es opcional).")
-                else:
-                    if "Name" not in mdf.columns:
-                        mdf["Name"] = ""
-                    mdf = mdf[["Aerovia","Sec","Name","Lat","Lon","Alt"]].copy()
-                    mdf["Sec"] = pd.to_numeric(mdf["Sec"], errors="coerce").astype("Int64")
-                    mdf["Lat"] = pd.to_numeric(mdf["Lat"], errors="coerce")
-                    mdf["Lon"] = pd.to_numeric(mdf["Lon"], errors="coerce")
-                    st.session_state.master_df = mdf
-                    st.success("Maestro cargado en sesión.")
-            except Exception as e:
-                st.error(f"No se pudo leer el maestro: {e}")
-        else:
-            master_file = st.file_uploader("CSV maestro", type=["csv"], key="master_upl")
-            if master_file is not None:
-                try:
-                    mdf = pd.read_csv(master_file)
-                    needed = {"Aerovia","Sec","Lat","Lon","Alt"}
-                    if not needed.issubset(set(mdf.columns)):
-                        st.error("El CSV maestro debe contener al menos: Aerovia, Sec, Lat, Lon, Alt (Name es opcional).")
-                    else:
-                        if "Name" not in mdf.columns:
-                            mdf["Name"] = ""
-                        mdf = mdf[["Aerovia","Sec","Name","Lat","Lon","Alt"]].copy()
-                        mdf["Sec"] = pd.to_numeric(mdf["Sec"], errors="coerce").astype("Int64")
-                        mdf["Lat"] = pd.to_numeric(mdf["Lat"], errors="coerce")
-                        mdf["Lon"] = pd.to_numeric(mdf["Lon"], errors="coerce")
-                        st.session_state.master_df = mdf
-                        st.success("Maestro cargado en sesión.")
-                except Exception as e:
-                    st.error(f"No se pudo leer el maestro: {e}")
-
-    with colm2:
-        if st.button("🧹 Vaciar maestro (sesión)"):
-            st.session_state.master_df = pd.DataFrame(columns=["Aerovia","Sec","Name","Lat","Lon","Alt"])
-
-    st.markdown("**Configurar append**")
-
-    cxa, cxb, cxc = st.columns([2,1,1])
-    with cxa:
-        route_id = st.text_input("ID de aerovía para la RUTA ACTUAL (p. ej. A1)", value="A1")
-    with cxb:
-        export_units = st.selectbox("Unidades Alt en maestro", ["ft","m","fl"], index=0)
-    with cxc:
-        sec_mode = st.selectbox("Numeración Sec", ["continuar si existe", "reiniciar en 1"], index=0)
-
-    # Calcular Sec inicial según el maestro existente
-    def _next_sec_for_route(df, route_id):
-        sub = df[df["Aerovia"] == route_id]
-        if sub.empty:
-            return 1
-        mx = pd.to_numeric(sub["Sec"], errors="coerce").dropna()
-        return int(mx.max()) + 1 if len(mx) else 1
-
-    rows = st.session_state.route_rows  # puntos de la ruta actual (en el editor)
-    if st.button("➕ Agregar RUTA ACTUAL al maestro"):
-        if not rows or len(rows) < 2:
-            st.warning("Agrega al menos 2 puntos a la ruta antes de añadir al maestro.")
-        else:
-            # Determinar Sec inicial
-            if sec_mode == "reiniciar en 1":
-                sec_start = 1
-            else:
-                sec_start = _next_sec_for_route(st.session_state.master_df, route_id)
-
-            # Construir DF de la ruta actual normalizado
-            cur = pd.DataFrame(rows)
-            cur = cur[["name","lat","lon","alt_m"]].copy()
-            cur["Aerovia"] = route_id
-            cur["Sec"] = list(range(sec_start, sec_start + len(cur)))
-            cur["Name"] = cur["name"].fillna("WPT")
-            cur["Lat"] = cur["lat"].astype(float)
-            cur["Lon"] = cur["lon"].astype(float)
-            # Convertir altitud a unidades de exportación
-            cur["Alt"] = [meters_to_units(m, export_units) for m in cur["alt_m"]]
-            cur = cur[["Aerovia","Sec","Name","Lat","Lon","Alt"]]
-
-            # Append al maestro en sesión
-            st.session_state.master_df = pd.concat([st.session_state.master_df, cur], ignore_index=True)
-            st.success(f"Ruta '{route_id}' añadida al maestro ({len(cur)} puntos).")
-
-    st.markdown("**Vista previa del maestro (últimas 200 filas):**")
-    st.dataframe(st.session_state.master_df.tail(200), use_container_width=True)
-
-    # Descargar / Guardar
-    colsave1, colsave2 = st.columns([1,1])
-    with colsave1:
-        if not st.session_state.master_df.empty:
-            csv_bytes = st.session_state.master_df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Descargar maestro actualizado", csv_bytes, file_name="aerovias_maestro.csv", mime="text/csv")
-
-    with colsave2:
-        save_path = st.text_input("Guardar en disco (ruta local, opcional)", value="")
-        if save_path and st.button("💾 Guardar maestro en disco (sobrescribe)"):
-            try:
-                st.session_state.master_df.to_csv(save_path, index=False, encoding="utf-8")
-                st.success(f"Guardado en: {save_path}")
-            except Exception as e:
-                st.error(f"No se pudo guardar: {e}")
+        st.download_button(
+            "📥 Descargar KML",
+            kml,
+            file_name="aerovia.kml",
+            mime="application/vnd.google-earth.kml+xml",
+        )
 
 def is_running_with_streamlit() -> bool:
     """Return True when executed via ``streamlit run``.
@@ -774,4 +535,3 @@ if __name__ == "__main__":
         run_streamlit_app()
     else:
         print("Este script debe ejecutarse con 'streamlit run airway_builder.py'.")
-
