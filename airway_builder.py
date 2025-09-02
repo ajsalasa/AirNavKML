@@ -492,84 +492,80 @@ def load_maestro_csv(path):
 # UI (Streamlit)
 # =========================
 
+
+def _add_point():
+    df = st.session_state.points_df
+    new_row = {
+        "Sec": len(df) + 1,
+        "Name": "",
+        "Lat": "",
+        "Lon": "",
+        "Alt": "",
+        "Eliminar": False,
+    }
+    st.session_state.points_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+
+def _delete_points():
+    df = st.session_state.points_df
+    df = df[~df["Eliminar"]].reset_index(drop=True)
+    df["Sec"] = range(1, len(df) + 1)
+    st.session_state.points_df = df
+
+
 def run_streamlit_app():
     st.set_page_config(page_title="Airway Builder", layout="wide")
     st.title("🛫 Airway Builder (KML)")
 
-    # Carga inicial del maestro en memoria
-    if "master_df" not in st.session_state:
-        if os.path.isfile(MAESTRO_FILE):
-            st.session_state.master_df = pd.read_csv(MAESTRO_FILE)
-        else:
-            st.session_state.master_df = pd.DataFrame(
-                columns=["Aerovia", "Sec", "Name", "Lat", "Lon", "Alt"]
-            )
-
-    df = st.session_state.master_df
-    aerovia_options = sorted(df["Aerovia"].unique()) if not df.empty else []
-    selected = st.selectbox("Aerovía", aerovia_options) if aerovia_options else None
-
-    route_rows = []
-    if selected:
-        route_df = (
-            df[df["Aerovia"] == selected]
-            .sort_values("Sec")
-            .reset_index(drop=True)
-        )
-        edited = st.data_editor(
-            route_df[["Sec", "Name", "Lat", "Lon", "Alt"]],
-            num_rows="dynamic",
-            key="route_editor",
+    if "points_df" not in st.session_state:
+        st.session_state.points_df = pd.DataFrame(
+            columns=["Sec", "Name", "Lat", "Lon", "Alt", "Eliminar"]
         )
 
-        route_rows = []
-        for _, r in edited.sort_values("Sec").iterrows():
+    edited = st.data_editor(
+        st.session_state.points_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Eliminar": st.column_config.CheckboxColumn(
+                "Eliminar", help="Marca para borrar este punto"
+            ),
+        },
+        key="points_editor",
+        help="Rellena la tabla con los puntos de la aerovía en orden.",
+    )
+    st.session_state.points_df = edited
+
+    col_add, col_del, col_kml = st.columns(3)
+    with col_add:
+        st.button("Añadir punto", on_click=_add_point, help="Agrega una fila vacía al final.")
+    with col_del:
+        st.button(
+            "Borrar",
+            on_click=_delete_points,
+            help="Elimina las filas marcadas con 'Eliminar'.",
+        )
+    with col_kml:
+        valid_rows = []
+        for _, r in st.session_state.points_df.iterrows():
             lat = _to_float(r.get("Lat"))
             lon = _to_float(r.get("Lon"))
             if lat is None or lon is None:
                 continue
             alt_m = alt_to_meters(r.get("Alt"), "ft")
             name = r.get("Name") or "WPT"
-            route_rows.append(
+            valid_rows.append(
                 {"name": name, "lat": float(lat), "lon": float(lon), "alt_m": alt_m}
             )
-
-        if st.button("Guardar aerovía"):
-            new_df = edited.copy()
-            new_df["Aerovia"] = selected
-            st.session_state.master_df = df[df["Aerovia"] != selected]
-            st.session_state.master_df = pd.concat(
-                [st.session_state.master_df, new_df], ignore_index=True
-            )
-            st.success("Aerovía guardada en memoria.")
-
-    enr_pts = load_enr_csv(WAYPOINTS_FILE)
-
-    if st.button("Generar KML"):
-        routes_dict = {}
-        for aer, grp in st.session_state.master_df.groupby("Aerovia"):
-            lst = []
-            for _, r in grp.sort_values("Sec").iterrows():
-                lat = _to_float(r.get("Lat"))
-                lon = _to_float(r.get("Lon"))
-                if lat is None or lon is None:
-                    continue
-                alt_m = alt_to_meters(r.get("Alt"), "ft")
-                name = r.get("Name") or "WPT"
-                lst.append(
-                    {"name": name, "lat": float(lat), "lon": float(lon), "alt_m": alt_m}
-                )
-            routes_dict[aer] = lst
-
-        maestro_pts = [p for pts in routes_dict.values() for p in pts]
-        points_lists = [enr_pts, maestro_pts]
-        kml = build_kml_multi(points_lists, routes_dict)
-        st.success("KML generado.")
+        kml = build_kml(valid_rows) if len(valid_rows) >= 2 else ""
         st.download_button(
-            "📥 Descargar KML",
+            "Guardar KML",
             kml,
             file_name="aerovia.kml",
             mime="application/vnd.google-earth.kml+xml",
+            disabled=len(valid_rows) < 2,
+            help="Descarga los puntos actuales en formato KML.",
         )
 
 def is_running_with_streamlit() -> bool:
