@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Airway Builder — Crea aerovías interactivamente y exporta a KML/CSV
+Airway Builder — Crea aerovías interactivamente y exporta a KML
 Requisitos:  pip install streamlit pandas
 
 Ejecuta:  streamlit run airway_builder.py
@@ -9,9 +9,7 @@ Ejecuta:  streamlit run airway_builder.py
 
 import math
 import re
-import io
 import os
-import argparse
 import pandas as pd
 import streamlit as st
 
@@ -125,33 +123,6 @@ def _parse_alt_value(v, units="m"):
     if units == "ft":
         return n * 0.3048
     return n
-
-def detect_coord_columns(df):
-    cols = list(df.columns)
-    low = [c.lower() for c in cols]
-    lat = [i for i,c in enumerate(low) if "lat" in c]
-    lon = [i for i,c in enumerate(low) if ("lon" in c) or ("long" in c)]
-    combo = [i for i,c in enumerate(low) if ("coord" in c) or ("wgs" in c) or ("geog" in c)]
-    combo += [i for i,c in enumerate(low) if c in ("position","pos","location")]
-    lat_col = cols[lat[0]] if lat else None
-    lon_col = cols[lon[0]] if lon else None
-    combo_col = cols[combo[0]] if combo else None
-    name_col = None
-    for prefer in ["name","id","fix","wpt"]:
-        if prefer in low:
-            name_col = cols[low.index(prefer)]
-            break
-    alt_col = None
-    for prefer in ["alt","altura","nivel"]:
-        if prefer in low:
-            alt_col = cols[low.index(prefer)]
-            break
-    type_col = None
-    for prefer in ["type","tipo"]:
-        if prefer in low:
-            type_col = cols[low.index(prefer)]
-            break
-    return lat_col, lon_col, combo_col, name_col, alt_col, type_col
 
 def parse_dms_piece(piece):
     piece = re.sub(r"[NSEW]", "", str(piece), flags=re.I).strip().replace("º","°")
@@ -470,57 +441,6 @@ def google_maps_preview_html(route_rows, api_key):
     """
     return html
 
-def csv_to_kml_from_files(points_csv=None, routes_csv=None, output="salida.kml"):
-    """Genera un KML tomando CSV de puntos y rutas directamente desde disco."""
-    points_rows = []
-    if points_csv and os.path.isfile(points_csv):
-        pdf = pd.read_csv(points_csv)
-        lat_c, lon_c, combo_c, name_c, alt_c, type_c = detect_coord_columns(pdf)
-        for _, row in pdf.iterrows():
-            lat = lon = None
-            if lat_c and lon_c:
-                lat = to_decimal(row[lat_c], "lat")
-                lon = to_decimal(row[lon_c], "lon")
-            elif combo_c:
-                parsed = to_decimal(row[combo_c], "lat")
-                if isinstance(parsed, tuple) and parsed[0] == "PAIR":
-                    lat, lon = parsed[1], parsed[2]
-            if lat is None or lon is None:
-                continue
-            name = str(row[name_c]) if name_c else "WPT"
-            alt_m = _parse_alt_value(row[alt_c], "ft") if alt_c else 0.0
-            extra = {}
-            if type_c:
-                extra[type_c] = row[type_c]
-            points_rows.append({"name": name, "lat": lat, "lon": lon, "alt_m": alt_m, "extra": extra})
-
-    route_rows = []
-    if routes_csv and os.path.isfile(routes_csv):
-        rdf = pd.read_csv(routes_csv)
-        for _, row in rdf.iterrows():
-            lat = to_decimal(row.get("Lat"), "lat")
-            lon = to_decimal(row.get("Lon"), "lon")
-            if lat is None or lon is None:
-                continue
-            alt_m = _parse_alt_value(row.get("Alt"), "ft")
-            route_rows.append({"name": row.get("Name", "WPT"), "lat": lat, "lon": lon, "alt_m": alt_m})
-
-    kml = build_kml(points_rows, points_alt_mode="absolute", extrude_points=False,
-                    route_rows=route_rows, route_alt_mode="absolute", route_color="#00A0FF",
-                    route_width=3.0, extrude_route=False)
-    with open(output, "w", encoding="utf-8") as f:
-        f.write(kml)
-    return output
-
-def main_cli():
-    parser = argparse.ArgumentParser(description="Genera KML desde CSV sin Streamlit")
-    parser.add_argument("--points", help="CSV con waypoints", default=None)
-    parser.add_argument("--routes", help="CSV con rutas", default=None)
-    parser.add_argument("--output", help="Archivo KML de salida", default="salida.kml")
-    args = parser.parse_args()
-    out = csv_to_kml_from_files(args.points, args.routes, args.output)
-    print(f"KML guardado en {out}")
-
 
 def load_enr_csv(path):
     """Carga ENR4_4_CR_2025-05-07.csv como lista de dicts."""
@@ -586,43 +506,6 @@ def run_streamlit_app():
         extrude_pts = st.checkbox("Extrude puntos (línea al suelo)", value=False)
         extrude_route = st.checkbox("Extrude ruta (pared al suelo)", value=False)
 
-    st.subheader("1) (Opcional) Cargar CSV de waypoints")
-    data_dir = st.text_input("Carpeta de datos", value=".")
-    files_in_dir = [f for f in os.listdir(data_dir) if f.lower().endswith(".csv")] if os.path.isdir(data_dir) else []
-    selected_wp = st.selectbox("Seleccionar CSV del directorio", ["(ninguno)"] + files_in_dir)
-
-    wp_df = None
-    wp_name_col = None
-    wp_lat_col = None
-    wp_lon_col = None
-    wp_combo_col = None
-
-    if selected_wp != "(ninguno)":
-        try:
-            wp_df = pd.read_csv(os.path.join(data_dir, selected_wp))
-        except Exception:
-            wp_df = pd.read_csv(os.path.join(data_dir, selected_wp), sep=";")
-    else:
-        waypoints_file = st.file_uploader("CSV con waypoints (columnas: nombre opcional, lat/lon o coordenada combinada)", type=["csv"])
-        if waypoints_file:
-            try:
-                wp_df = pd.read_csv(waypoints_file)
-            except Exception:
-                waypoints_file.seek(0)
-                wp_df = pd.read_csv(waypoints_file, sep=";")
-
-    if wp_df is not None:
-        st.dataframe(wp_df.head(20), use_container_width=True)
-        cols = ["(ninguna)"] + list(wp_df.columns)
-        wp_name_col = st.selectbox("Columna nombre (opcional)", cols, index=0)
-        lat_candidates = [c for c in wp_df.columns if re.search(r"lat", c, flags=re.I)]
-        lon_candidates = [c for c in wp_df.columns if re.search(r"lon|long", c, flags=re.I)]
-        combo_candidates = [c for c in wp_df.columns if re.search(r"coord|wgs|geog|position|pos|location", c, flags=re.I)]
-
-        wp_lat_col = st.selectbox("Columna Lat (si existe)", ["(ninguna)"] + lat_candidates, index=0)
-        wp_lon_col = st.selectbox("Columna Lon (si existe)", ["(ninguna)"] + lon_candidates, index=0)
-        wp_combo_col = st.selectbox("Columna coordenada combinada (si existe)", ["(ninguna)"] + combo_candidates, index=0)
-
     # Estado de la ruta
     if "route_rows" not in st.session_state:
         st.session_state.route_rows = []
@@ -631,60 +514,33 @@ def run_streamlit_app():
     if "master_df" not in st.session_state:
         st.session_state.master_df = pd.DataFrame(columns=["Aerovia","Sec","Name","Lat","Lon","Alt"])
 
-    st.subheader("2) Construir ruta — puntos y altitudes")
-    c1, c2 = st.columns(2)
+    data_dir = st.text_input("Carpeta de datos", value=".")
 
-    with c1:
-        st.markdown("**Agregar punto manualmente**")
-        name_in = st.text_input("Nombre/ID del punto", value="")
-        coord_in = st.text_input("Coordenada (lat,lon o DMS/compacto por separado)", value="")
-        lat_in = st.text_input("Lat (si no usas 'lat,lon')", value="")
-        lon_in = st.text_input("Lon (si no usas 'lat,lon')", value="")
-        alt_val = st.text_input("Altitud del punto (ej 7500, 2300 ft, FL120)", value="")
-        alt_units = st.selectbox("Unidades alt", ["ft", "m", "fl"], index=0)
-        if st.button("➕ Agregar punto manual"):
-            lat = None; lon = None
-            if coord_in.strip():
-                parsed = to_decimal(coord_in, "lat")
-                if isinstance(parsed, tuple) and parsed and parsed[0] == "PAIR":
-                    lat, lon = parsed[1], parsed[2]
-                else:
-                    st.warning("Usaste un solo valor en 'Coordenada'. Escribe 'lat,lon' o usa los campos Lat/Lon.")
-            if lat is None or lon is None:
-                lat = to_decimal(lat_in, "lat")
-                lon = to_decimal(lon_in, "lon")
-            if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
-                st.error("Coordenadas inválidas.")
+    st.subheader("1) Construir ruta — puntos y altitudes")
+
+    st.markdown("**Agregar punto manualmente**")
+    name_in = st.text_input("Nombre/ID del punto", value="")
+    coord_in = st.text_input("Coordenada (lat,lon o DMS/compacto por separado)", value="")
+    lat_in = st.text_input("Lat (si no usas 'lat,lon')", value="")
+    lon_in = st.text_input("Lon (si no usas 'lat,lon')", value="")
+    alt_val = st.text_input("Altitud del punto (ej 7500, 2300 ft, FL120)", value="")
+    alt_units = st.selectbox("Unidades alt", ["ft", "m", "fl"], index=0)
+    if st.button("➕ Agregar punto manual"):
+        lat = None; lon = None
+        if coord_in.strip():
+            parsed = to_decimal(coord_in, "lat")
+            if isinstance(parsed, tuple) and parsed and parsed[0] == "PAIR":
+                lat, lon = parsed[1], parsed[2]
             else:
-                alt_m = alt_to_meters(alt_val, alt_units)
-                st.session_state.route_rows.append({"name": name_in or "WPT", "lat": lat, "lon": lon, "alt_m": alt_m})
-
-    with c2:
-        st.markdown("**Agregar desde CSV de waypoints**")
-        if wp_df is not None:
-            # selector de fila
-            idx = st.number_input("Fila a agregar (0 = primera visible)", min_value=0, max_value=len(wp_df)-1, value=0, step=1)
-            def get_latlon_from_wp(row):
-                lat = lon = None
-                if wp_lat_col and wp_lat_col != "(ninguna)" and wp_lon_col and wp_lon_col != "(ninguna)":
-                    lat = to_decimal(row[wp_lat_col], "lat"); lon = to_decimal(row[wp_lon_col], "lon")
-                elif wp_combo_col and wp_combo_col != "(ninguna)":
-                    parsed = to_decimal(row[wp_combo_col], "lat")
-                    if isinstance(parsed, tuple) and parsed[0] == "PAIR":
-                        lat, lon = parsed[1], parsed[2]
-                return lat, lon
-
-            default_alt = st.text_input("Altitud por defecto (p.ej. 7500 ft)", value="7500 ft")
-            default_units = st.selectbox("Unidades por defecto", ["ft","m","fl"], index=0)
-            if st.button("➕ Agregar punto desde CSV"):
-                row = wp_df.iloc[int(idx)]
-                lat, lon = get_latlon_from_wp(row)
-                if lat is None or lon is None:
-                    st.error("No se pudo leer lat/lon de esa fila (revisa columnas).")
-                else:
-                    name = str(row[wp_name_col]) if (wp_name_col and wp_name_col != "(ninguna)") else "WPT"
-                    alt_m = alt_to_meters(default_alt, default_units)
-                    st.session_state.route_rows.append({"name": name, "lat": lat, "lon": lon, "alt_m": alt_m})
+                st.warning("Usaste un solo valor en 'Coordenada'. Escribe 'lat,lon' o usa los campos Lat/Lon.")
+        if lat is None or lon is None:
+            lat = to_decimal(lat_in, "lat")
+            lon = to_decimal(lon_in, "lon")
+        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            st.error("Coordenadas inválidas.")
+        else:
+            alt_m = alt_to_meters(alt_val, alt_units)
+            st.session_state.route_rows.append({"name": name_in or "WPT", "lat": lat, "lon": lon, "alt_m": alt_m})
 
     # Editor de la ruta (reordenable)
     st.markdown("**Ruta (ordena filas para definir inicio→fin):**")
@@ -709,7 +565,7 @@ def run_streamlit_app():
     elif st.session_state.route_rows:
         st.info("Define la variable de entorno GOOGLE_MAPS_API_KEY para ver la previsualización.")
 
-    st.subheader("3) Rumbo y corrección por tramo")
+    st.subheader("2) Rumbo y corrección por tramo")
 
     use_rhumb = st.radio(
         "Modo de cálculo para corrección del punto siguiente",
@@ -760,37 +616,28 @@ def run_streamlit_app():
                 st.caption("Nota: la altitud del punto final no cambia con esta corrección.")
             
     # Exportar
-    st.subheader("4) Exportar")
-    colx, coly = st.columns(2)
-
-    with colx:
-        if st.button("Generar KML"):
-            enr_pts = st.session_state.get("enr_points", [])
-            maestro_routes = st.session_state.get("maestro_routes", {})
-            maestro_pts = [p for pts in maestro_routes.values() for p in pts]
-            route_dict = {}
-            if rows:
-                route_dict["Ruta manual"] = rows
-            route_dict.update(maestro_routes)
-            points_lists = [enr_pts, maestro_pts, rows]
-            kml = build_kml_multi(
-                points_lists,
-                route_dict,
-                points_alt_mode=pt_alt_mode, extrude_points=extrude_pts,
-                route_alt_mode=rt_alt_mode,
-                route_color=rt_color, route_width=rt_width, extrude_route=extrude_route,
-            )
-            st.success("KML generado.")
-            st.download_button("📥 Descargar KML", kml, file_name="aerovia.kml", mime="application/vnd.google-earth.kml+xml")
-
-    with coly:
-        if st.button("Descargar CSV de la aerovía"):
-            out_df = pd.DataFrame(rows)
-            csv_bytes = out_df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Descargar CSV", csv_bytes, file_name="aerovia.csv", mime="text/csv")
+    st.subheader("3) Exportar")
+    if st.button("Generar KML"):
+        enr_pts = st.session_state.get("enr_points", [])
+        maestro_routes = st.session_state.get("maestro_routes", {})
+        maestro_pts = [p for pts in maestro_routes.values() for p in pts]
+        route_dict = {}
+        if rows:
+            route_dict["Ruta manual"] = rows
+        route_dict.update(maestro_routes)
+        points_lists = [enr_pts, maestro_pts, rows]
+        kml = build_kml_multi(
+            points_lists,
+            route_dict,
+            points_alt_mode=pt_alt_mode, extrude_points=extrude_pts,
+            route_alt_mode=rt_alt_mode,
+            route_color=rt_color, route_width=rt_width, extrude_route=extrude_route,
+        )
+        st.success("KML generado.")
+        st.download_button("📥 Descargar KML", kml, file_name="aerovia.kml", mime="application/vnd.google-earth.kml+xml")
 
     st.markdown("---")
-    st.subheader("5) Maestro de aerovías (append en memoria)")
+    st.subheader("4) Maestro de aerovías (append en memoria)")
 
     colm1, colm2 = st.columns([2,1])
 
@@ -926,5 +773,5 @@ if __name__ == "__main__":
     if is_running_with_streamlit():
         run_streamlit_app()
     else:
-        main_cli()
+        print("Este script debe ejecutarse con 'streamlit run airway_builder.py'.")
 
