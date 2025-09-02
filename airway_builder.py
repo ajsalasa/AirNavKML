@@ -419,7 +419,14 @@ st.title("🗺️ Airway KML Editor — proyecto único")
 
 # Estado
 if "routes" not in st.session_state:
-    st.session_state.routes = {}  # rid -> cfg
+    if STATE_JSON.exists():
+        try:
+            st.session_state.routes = json.loads(STATE_JSON.read_text(encoding="utf-8"))
+        except Exception:
+            st.session_state.routes = {}  # rid -> cfg
+    else:
+        st.session_state.routes = {}  # rid -> cfg
+    st.session_state._routes_snapshot = json.dumps(st.session_state.routes, sort_keys=True)
 if "active_route" not in st.session_state:
     st.session_state.active_route = None
 if "auto_save" not in st.session_state:
@@ -655,16 +662,10 @@ with col2:
             st.download_button("Descargar CSV maestro", df.to_csv(index=False).encode("utf-8"), file_name="routes_master.csv", mime="text/csv")
 
 with col3:
-    # Persistencia ligera del estado (JSON), opcional
-    c1,c2 = st.columns(2)
-    with c1:
-        if st.button("Guardar estado (JSON)"):
-            STATE_JSON.write_text(json.dumps(st.session_state.routes, indent=2), encoding="utf-8")
-            st.success(f"Estado guardado: {STATE_JSON.name}")
-    with c2:
-        if STATE_JSON.exists() and st.button("Cargar estado (JSON)"):
-            try:
-                st.session_state.routes = json.loads(STATE_JSON.read_text(encoding="utf-8"))
-                st.success("Estado cargado.")
-            except Exception as e:
-                st.error(f"No se pudo cargar: {e}")
+    st.caption("El estado se guarda automáticamente.")
+
+# Persistencia automática del estado
+_snapshot = json.dumps(st.session_state.routes, sort_keys=True)
+if _snapshot != st.session_state.get("_routes_snapshot"):
+    STATE_JSON.write_text(json.dumps(st.session_state.routes, indent=2), encoding="utf-8")
+    st.session_state._routes_snapshot = _snapshot
