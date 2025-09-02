@@ -114,3 +114,6 @@ celerybeat.pid
 
 # Python version managers
 .python-version
+
+# App state
+routes_state.json
