@@ -4,7 +4,7 @@
 Airway Builder — Streamlit app
 - Carga waypoints desde CSV (Lat/Lon o columna combinada).
 - Construye aerovías con puntos de CSV o ingresados manualmente (altitud por punto).
-- Corrige rumbo por tramo (loxodrómico o geodésico), preservando distancia o con distancia indicada.
+- Corrige rumbo por tramo (loxodrómico), preservando distancia o con distancia indicada.
 - Mantiene la cadena: el inicio de cada tramo es el final del tramo previo.
 - Exporta KML y CSV de la aerovía actual.
 - Permite "append" a un CSV maestro en memoria y descargar/guardar una sola vez.
@@ -175,13 +175,6 @@ def initial_bearing_true(lat1, lon1, lat2, lon2):
 
 def _normalize_lon_deg(lon_deg):
     return (lon_deg + 180.0) % 360.0 - 180.0
-
-def gc_distance_m(lat1, lon1, lat2, lon2):
-    φ1, λ1, φ2, λ2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dφ, dλ = φ2 - φ1, λ2 - λ1
-    a = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
-    return 2*EARTH_R_M*math.atan2(math.sqrt(a), math.sqrt(1-a))
-
 def rhumb_distance_m(lat1, lon1, lat2, lon2):
     φ1, λ1, φ2, λ2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dφ, dλ = φ2 - φ1, λ2 - λ1
@@ -191,15 +184,6 @@ def rhumb_distance_m(lat1, lon1, lat2, lon2):
     q = dφ/Δψ if abs(Δψ) > 1e-12 else math.cos(φ1)
     δ = math.sqrt(dφ*dφ + (q*dλ)*(q*dλ))
     return δ * EARTH_R_M
-
-def destination_gc(lat1, lon1, bearing_deg, distance_m):
-    θ = math.radians(bearing_deg)
-    δ = distance_m / EARTH_R_M
-    φ1, λ1 = math.radians(lat1), math.radians(lon1)
-    φ2 = math.asin(math.sin(φ1)*math.cos(δ) + math.cos(φ1)*math.sin(δ)*math.cos(θ))
-    λ2 = λ1 + math.atan2(math.sin(θ)*math.sin(δ)*math.cos(φ1),
-                         math.cos(δ) - math.sin(φ1)*math.sin(φ2))
-    return math.degrees(φ2), _normalize_lon_deg(math.degrees(λ2))
 
 def destination_rhumb(lat1, lon1, bearing_deg, distance_m):
     θ = math.radians(bearing_deg)
@@ -422,25 +406,18 @@ st.session_state.route_rows = edited.to_dict("records")
 
 # --------- 3) Rumbo por tramo y corrección ----------
 st.subheader("3) Rumbo y corrección por tramo")
-
-mode_label = st.radio(
-    "Modo de cálculo para corrección del punto siguiente",
-    ["Loxodrómico (rumbo constante)", "Geodésico (gran círculo)"],
-    index=0, horizontal=True
-)
-use_rhumb = mode_label.startswith("Loxo")
+st.markdown("Modo de cálculo: **Loxodrómico (rumbo constante)**")
 
 rows = st.session_state.route_rows
 for i in range(len(rows)-1):
     a, b = rows[i], rows[i+1]
     brg = initial_bearing_true(a["lat"], a["lon"], b["lat"], b["lon"])
-    d_gc_m = gc_distance_m(a["lat"], a["lon"], b["lat"], b["lon"])
-    d_rh_m = rhumb_distance_m(a["lat"], a["lon"], b["lat"], b["lon"])
-    d_nm = (d_rh_m if use_rhumb else d_gc_m) / 1852.0
+    d_m = rhumb_distance_m(a["lat"], a["lon"], b["lat"], b["lon"])
+    d_nm = d_m / 1852.0
 
     with st.expander(f"Tramo {i+1}: {a['name']} → {b['name']}"):
         st.write(f"**Rumbo actual (°T):** {None if brg is None else round(brg,1)}")
-        st.write(f"**Distancia actual:** {d_nm:.2f} NM ({'loxodrómica' if use_rhumb else 'gran círculo'})")
+        st.write(f"**Distancia actual:** {d_nm:.2f} NM (loxodrómica)")
 
         desired = st.number_input(
             f"Rumbo deseado (°T) — Tramo {i+1}",
@@ -458,10 +435,7 @@ for i in range(len(rows)-1):
         with colA:
             if st.button(f"🔧 Corregir punto final del tramo {i+1}", key=f"fix_{i}"):
                 dist_m = dist_nm * 1852.0
-                if use_rhumb:
-                    new_lat, new_lon = destination_rhumb(a["lat"], a["lon"], desired, dist_m)
-                else:
-                    new_lat, new_lon = destination_gc(a["lat"], a["lon"], desired, dist_m)
+                new_lat, new_lon = destination_rhumb(a["lat"], a["lon"], desired, dist_m)
                 # Mantener altitud del punto final
                 rows[i+1]["lat"] = float(new_lat)
                 rows[i+1]["lon"] = float(new_lon)
