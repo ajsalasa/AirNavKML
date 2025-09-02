@@ -442,7 +442,10 @@ def run_streamlit_app():
     wp_combo_col = None
 
     if selected_wp != "(ninguno)":
-        wp_df = pd.read_csv(os.path.join(data_dir, selected_wp))
+        try:
+            wp_df = pd.read_csv(os.path.join(data_dir, selected_wp))
+        except Exception:
+            wp_df = pd.read_csv(os.path.join(data_dir, selected_wp), sep=";")
     else:
         waypoints_file = st.file_uploader("CSV con waypoints (columnas: nombre opcional, lat/lon o coordenada combinada)", type=["csv"])
         if waypoints_file:
