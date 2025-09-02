@@ -16,6 +16,8 @@ Ejecuta:
 
 import math
 import re
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -339,39 +341,16 @@ with st.sidebar:
     extrude_route = st.checkbox("Extrude ruta (pared al suelo)", value=False)
     add_start_end_icons = st.checkbox("Iconos de START/END", value=True)
 
-# --------- 1) (Opcional) cargar CSV de waypoints ----------
-st.subheader("1) (Opcional) Cargar CSV de waypoints")
-waypoints_file = st.file_uploader("CSV con waypoints (columnas: Name opcional, Lat/Lon o coordenada combinada)", type=["csv"])
+# --------- 1) Cargar CSV de waypoints (automático) ----------
+st.subheader("1) Cargar CSV de waypoints (automático)")
+wp_path = Path(__file__).resolve().parent / "ENR4_4_CR_2025-05-07.csv"
+wp_df = pd.read_csv(wp_path, sep=";")
+st.dataframe(wp_df.head(20), use_container_width=True)
 
-wp_df = None
-wp_name_col = None
-wp_lat_col = None
-wp_lon_col = None
+wp_name_col = "designador"
+wp_lat_col = "lat"
+wp_lon_col = "lon"
 wp_combo_col = None
-
-if waypoints_file:
-    read_ok = False
-    for sep in [",",";","\t","|"]:
-        try:
-            waypoints_file.seek(0)
-            wp_df = pd.read_csv(waypoints_file, sep=sep)
-            read_ok = True
-            break
-        except Exception:
-            continue
-    if not read_ok:
-        waypoints_file.seek(0)
-        wp_df = pd.read_csv(waypoints_file)  # fallback
-    st.dataframe(wp_df.head(20), use_container_width=True)
-    cols = ["(ninguna)"] + list(wp_df.columns)
-    wp_name_col = st.selectbox("Columna Name (opcional)", cols, index=0)
-    lat_candidates = [c for c in wp_df.columns if re.search(r"lat", c, flags=re.I)]
-    lon_candidates = [c for c in wp_df.columns if re.search(r"lon|long", c, flags=re.I)]
-    combo_candidates = [c for c in wp_df.columns if re.search(r"coord|wgs|geog|position|pos|location", c, flags=re.I)]
-
-    wp_lat_col = st.selectbox("Columna Lat (si existe)", ["(ninguna)"] + lat_candidates, index=0)
-    wp_lon_col = st.selectbox("Columna Lon (si existe)", ["(ninguna)"] + lon_candidates, index=0)
-    wp_combo_col = st.selectbox("Columna coordenada combinada (si existe)", ["(ninguna)"] + combo_candidates, index=0)
 
 # --------- 2) Construir ruta: agregar puntos ----------
 st.subheader("2) Construir ruta — puntos y altitudes")
