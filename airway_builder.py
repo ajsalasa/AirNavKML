@@ -533,8 +533,8 @@ def run_streamlit_app():
             ),
         },
         key="points_editor",
-        help="Rellena la tabla con los puntos de la aerovía en orden.",
     )
+    st.caption("Rellena la tabla con los puntos de la aerovía en orden.")
     st.session_state.points_df = edited
 
     col_add, col_del, col_kml = st.columns(3)
