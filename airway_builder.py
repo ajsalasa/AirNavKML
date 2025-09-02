@@ -329,7 +329,7 @@ with st.sidebar:
 st.subheader("1) Cargar CSV de waypoints (automático)")
 wp_path = Path(__file__).resolve().parent / "ENR4_4_CR_2025-05-07.csv"
 wp_df = pd.read_csv(wp_path, sep=";")
-st.dataframe(wp_df.head(20), use_container_width=True)
+st.dataframe(wp_df, use_container_width=True)
 
 wp_name_col = "designador"
 wp_lat_col = "lat"
