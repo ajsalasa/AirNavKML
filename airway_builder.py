@@ -18,7 +18,7 @@ Ejecuta:
 import math, re, json
 from pathlib import Path
 from typing import Dict, List, Tuple
-
+import os
 import pandas as pd
 import streamlit as st
 import pydeck as pdk
@@ -299,86 +299,117 @@ def build_kml_project(
     parts.append("</Document></kml>")
     return "\n".join(parts)
 
-# =========================
-# PYDECK MAP
-# =========================
-def hex_to_rgb(hex_color: str, alpha=200)->List[int]:
-    s = hex_color.lstrip("#")
-    if len(s)==8:  # assume AABBGGRR (KML style). Convert to RGB best-effort.
-        aa,bb,gg,rr = s[0:2],s[2:4],s[4:6],s[6:8]
-        r=int(rr,16); g=int(gg,16); b=int(bb,16)
-        return [r,g,b,alpha]
-    if len(s)!=6: s="00A0FF"
-    r=int(s[0:2],16); g=int(s[2:4],16); b=int(s[4:6],16)
-    return [r,g,b,alpha]
+def google_maps_project_preview_html(
+    routes: dict,
+    wp_df=None,
+    wp_name_col: str = None,
+    wp_lat_col: str = None,
+    wp_lon_col: str = None,
+    wp_combo_col: str = None,
+    show_waypoints: bool = True,
+    map_type: str = "terrain"  # "roadmap" | "satellite" | "hybrid" | "terrain"
+):
+    """
+    Genera HTML para previsualizar TODO el proyecto en Google Maps:
+      - Todas las rutas (polylines con color/ancho por ruta)
+      - Opcional: todos los waypoints del CSV como marcadores
 
-def build_map_layers(wp_df, wp_name_col, wp_lat_col, wp_lon_col, wp_combo_col, routes):
-    # Waypoints to dataframe with lon/lat
-    wp_items=[]
-    def _wp_latlon(row):
-        if wp_lat_col and wp_lon_col and wp_lat_col in row and wp_lon_col in row:
-            return to_decimal(row[wp_lat_col],"lat"), to_decimal(row[wp_lon_col],"lon")
-        if wp_combo_col and wp_combo_col in row:
-            pr = to_decimal(row[wp_combo_col],"lat")
-            if isinstance(pr,tuple) and pr[0]=="PAIR": return pr[1],pr[2]
-        return None,None
+    routes: dict como en tu editor: { rid: {color, width, points:[{lat,lon,alt_m,name}, ...]} }
+    wp_df y *_col: DataFrame y mapeo de columnas para waypoints del CSV.
+    """
 
-    for _,row in wp_df.iterrows():
-        lat,lon=_wp_latlon(row)
-        if lat is None or lon is None: continue
-        wp_items.append({"name": str(row.get(wp_name_col,"WPT")), "lat": float(lat), "lon": float(lon)})
+    # --- Serializar rutas a JSON para JS ---
+    routes_js = []
+    for rid, cfg in (routes or {}).items():
+        pts = cfg.get("points", []) or []
+        if len(pts) == 0:
+            continue
+        path = [{"lat": float(p["lat"]), "lng": float(p["lon"])} for p in pts if p.get("lat") is not None and p.get("lon") is not None]
+        if not path:
+            continue
+        routes_js.append({
+            "name": str(rid),
+            "color": cfg.get("color", "#00A0FF"),
+            "width": float(cfg.get("width", 3.0)),
+            "path": path
+        })
 
-    layers=[]
+    # --- Serializar waypoints del CSV (si se pide) ---
+    wps_js = []
+    if show_waypoints and (wp_df is not None) and (len(wp_df) > 0):
+        def _wp_latlon(row):
+            lat = lon = None
+            if wp_lat_col and wp_lon_col and (wp_lat_col in row) and (wp_lon_col in row):
+                lat = to_decimal(row[wp_lat_col], "lat")
+                lon = to_decimal(row[wp_lon_col], "lon")
+            elif wp_combo_col and (wp_combo_col in row):
+                pr = to_decimal(row[wp_combo_col], "lat")
+                if isinstance(pr, tuple) and pr[0] == "PAIR":
+                    lat, lon = pr[1], pr[2]
+            return lat, lon
 
-    # Waypoints layers
-    if wp_items:
-        layers.append(pdk.Layer(
-            "ScatterplotLayer",
-            data=wp_items,
-            get_position=["lon","lat"],
-            get_radius=150,
-            pickable=True,
-            get_fill_color=[30,144,255,140],
-        ))
-        layers.append(pdk.Layer(
-            "TextLayer",
-            data=wp_items,
-            get_position=["lon","lat"],
-            get_text="name",
-            get_size=12,
-            get_color=[10,10,10,255],
-            get_alignment_baseline="'top'"
-        ))
+        for _, row in wp_df.iterrows():
+            lat, lon = _wp_latlon(row)
+            if lat is None or lon is None:
+                continue
+            wps_js.append({
+                "name": str(row.get(wp_name_col, "WPT")),
+                "lat": float(lat),
+                "lng": float(lon)
+            })
 
-    # Routes: one PathLayer per route
-    for rid,cfg in routes.items():
-        pts = cfg.get("points",[])
-        if len(pts)<2: continue
-        path=[ [p["lon"], p["lat"]] for p in pts ]
-        data=[{"name": rid, "path": path, "color": hex_to_rgb(cfg.get("color","#00A0FF"), alpha=220)}]
-        layers.append(pdk.Layer(
-            "PathLayer",
-            data=data,
-            get_path="path",
-            get_color="color",
-            width_scale=1,
-            width_min_pixels=max(1,int(cfg.get("width",3.0))),
-            pickable=True
-        ))
-    return layers, wp_items
+    # Centro por defecto (si no hay nada que mostrar)
+    center_lat, center_lng, zoom = 10.0, -84.0, 6
 
-def initial_view(wp_items, routes):
-    # compute center from waypoints or first route
-    if wp_items:
-        lat=sum(x["lat"] for x in wp_items)/len(wp_items)
-        lon=sum(x["lon"] for x in wp_items)/len(wp_items)
-        return pdk.ViewState(latitude=lat, longitude=lon, zoom=7, pitch=0)
-    # fallback: try first route
-    for cfg in routes.values():
-        pts=cfg.get("points",[])
-        if pts:
-            return pdk.ViewState(latitude=pts[0]["lat"], longitude=pts[0]["lon"], zoom=7, pitch=0)
-    return pdk.ViewState(latitude=10.0, longitude=-84.0, zoom=6, pitch=0)
+    html = f"""
+<div id="map" style="height:600px;border-radius:12px;"></div>
+<script src="https://maps.googleapis.com/maps/api/js?key={{API_KEY}}"></script>
+<script>
+(function() {{
+  const map = new google.maps.Map(document.getElementById('map'), {{
+    center: {{lat: {center_lat:.6f}, lng: {center_lng:.6f}}},
+    zoom: {zoom},
+    mapTypeId: '{map_type}'
+  }});
+
+  const bounds = new google.maps.LatLngBounds();
+  let havePoints = false;
+
+  // Waypoints (opcional)
+  const wps = {json.dumps(wps_js)};
+  wps.forEach(w => {{
+    const pos = new google.maps.LatLng(w.lat, w.lng);
+    new google.maps.Marker({{ position: pos, map: map, title: w.name }});
+    bounds.extend(pos); havePoints = true;
+  }});
+
+  // Rutas
+  const routes = {json.dumps(routes_js)};
+  routes.forEach(r => {{
+    if (!r.path || r.path.length < 2) return;
+    const poly = new google.maps.Polyline({{
+      map: map,
+      path: r.path,
+      geodesic: true,
+      strokeColor: r.color || '#00A0FF',
+      strokeOpacity: 0.95,
+      strokeWeight: Math.max(1, Math.round(r.width || 3))
+    }});
+    // Extender bounds con toda la ruta
+    r.path.forEach(p => {{ bounds.extend(new google.maps.LatLng(p.lat, p.lng)); havePoints = true; }});
+  }});
+
+  if (havePoints) {{
+    map.fitBounds(bounds);
+    // Ajuste suave: si el zoom queda demasiado cerca, limítalo un poco
+    const listener = google.maps.event.addListenerOnce(map, "idle", function() {{
+      if (map.getZoom() > 14) map.setZoom(14);
+    }});
+  }}
+}})();
+</script>
+""".replace("{API_KEY}", st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", "")))
+    return html
 
 # =========================
 # STREAMLIT UI
@@ -581,18 +612,23 @@ else:
 # =========================
 # MAPA — vista de TODO el proyecto
 # =========================
-st.subheader("Vista del proyecto (mapa)")
-layers, wp_items = build_map_layers(
-    wp_df, WP_NAME_COL, WP_LAT_COL, WP_LON_COL, (WP_COMBO_COL or None),
-    routes=st.session_state.routes
-)
-r = pdk.Deck(
-    map_style="mapbox://styles/mapbox/light-v9",
-    initial_view_state=initial_view(wp_items, st.session_state.routes),
-    layers=layers,
-    tooltip={"text": "{name}"}
-)
-st.pydeck_chart(r, use_container_width=True)
+st.markdown("**Vista previa en Google Maps (proyecto completo)**")
+_gkey = st.secrets.get("GOOGLE_MAPS_API_KEY", os.getenv("GOOGLE_MAPS_API_KEY", ""))
+
+if _gkey:
+    g_html = google_maps_project_preview_html(
+        routes=st.session_state.routes,     # TODAS las rutas
+        wp_df=wp_df,                        # tus waypoints del CSV ya cargado
+        wp_name_col=WP_NAME_COL,
+        wp_lat_col=WP_LAT_COL,
+        wp_lon_col=WP_LON_COL,
+        wp_combo_col=(WP_COMBO_COL or None),
+        show_waypoints=True,                # pon False si no quieres marcadores de WPT
+        map_type="terrain"                  # "roadmap" si prefieres
+    )
+    st.components.v1.html(g_html, height=620)
+else:
+    st.info("Falta GOOGLE_MAPS_API_KEY (en secrets o variable de entorno) para ver la previsualización.")
 
 # =========================
 # EXPORTAR / GUARDAR
