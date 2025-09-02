@@ -363,6 +363,74 @@ def build_kml(points_rows, *, points_alt_mode="absolute", extrude_points=False,
     return "\n".join(parts)
 
 
+def build_kml_multi(points_lists, routes_dict, *, points_alt_mode="absolute", extrude_points=False,
+                    route_alt_mode="absolute", route_color="#00A0FF", route_width=3.0,
+                    extrude_route=False):
+    """Version extendida que acepta múltiples listas de puntos y rutas."""
+    points_rows = []
+    for lst in points_lists or []:
+        points_rows.extend(lst)
+
+    parts = []
+    parts.append('<?xml version="1.0" encoding="UTF-8"?>')
+    parts.append('<kml xmlns="http://www.opengis.net/kml/2.2">')
+    parts.append("<Document>")
+    parts.append("<name>Aerovía</name>")
+
+    parts.append(
+        '<Style id="ptDefault"><IconStyle>'
+        '<color>ff0000ff</color><scale>1.1</scale>'
+        '<Icon><href>http://maps.google.com/mapfiles/kml/paddle/wht-blank.png</href></Icon>'
+        '</IconStyle><LabelStyle><scale>0.9</scale></LabelStyle></Style>'
+    )
+    color_kml = kml_color_from_hex(route_color, alpha="ff")
+    parts.append(f'<Style id="routeStyle"><LineStyle><color>{color_kml}</color><width>{route_width}</width></LineStyle></Style>')
+
+    if points_rows:
+        for r in points_rows:
+            name = r.get("name") or "WPT"
+            lat, lon, altm = r["lat"], r["lon"], float(r.get("alt_m", 0.0))
+            extrude_tag = "<extrude>1</extrude>" if extrude_points else ""
+            desc_items = []
+            for k, v in (r.get("extra") or {}).items():
+                desc_items.append(f"<tr><th style='text-align:left;padding-right:8px'>{k}</th><td>{v}</td></tr>")
+            desc = "<![CDATA[<table>{}</table>]]>".format("".join(desc_items)) if desc_items else ""
+            parts.append(
+                "<Placemark>",
+                f"<name>{name}</name>",
+                "<styleUrl>#ptDefault</styleUrl>",
+                f"<description>{desc}</description>",
+                "<Point>",
+                f"<altitudeMode>{points_alt_mode}</altitudeMode>",
+                f"{extrude_tag}",
+                f"<coordinates>{lon:.8f},{lat:.8f},{altm:.2f}</coordinates>",
+                "</Point>",
+                "</Placemark>",
+            )
+
+    if routes_dict:
+        for rname, rows in routes_dict.items():
+            if len(rows) < 2:
+                continue
+            coords = [f"{r['lon']:.8f},{r['lat']:.8f},{float(r.get('alt_m',0.0)):.2f}" for r in rows]
+            extrude_tag = "<extrude>1</extrude>" if extrude_route else ""
+            parts.append(
+                "<Placemark>",
+                f"<name>{rname}</name>",
+                "<styleUrl>#routeStyle</styleUrl>",
+                "<LineString>",
+                f"<altitudeMode>{route_alt_mode}</altitudeMode>",
+                f"{extrude_tag}",
+                "<coordinates>" + " ".join(coords) + "</coordinates>",
+                "</LineString>",
+                "</Placemark>",
+            )
+
+    parts.append("</Document>")
+    parts.append("</kml>")
+    return "\n".join(parts)
+
+
 def google_maps_preview_html(route_rows, api_key):
     """Genera HTML para previsualizar la ruta en Google Maps.
 
@@ -453,6 +521,49 @@ def main_cli():
     out = csv_to_kml_from_files(args.points, args.routes, args.output)
     print(f"KML guardado en {out}")
 
+
+def load_enr_csv(path):
+    """Carga ENR4_4_CR_2025-05-07.csv como lista de dicts."""
+    if not os.path.isfile(path):
+        return []
+    try:
+        df = pd.read_csv(path, sep=";")
+    except Exception:
+        return []
+    rows = []
+    for _, r in df.iterrows():
+        lat = _to_float(r.get("lat"))
+        lon = _to_float(r.get("lon"))
+        if lat is None or lon is None:
+            continue
+        name = str(r.get("designador", "WPT"))
+        rows.append({"name": name, "lat": float(lat), "lon": float(lon), "alt_m": 0.0})
+    return rows
+
+
+def load_maestro_csv(path):
+    """Carga aerovias_maestro.csv agrupado por Aerovia."""
+    if not os.path.isfile(path):
+        return {}
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return {}
+    routes = {}
+    for aerovia, grp in df.groupby("Aerovia"):
+        grp = grp.sort_values("Sec")
+        lst = []
+        for _, r in grp.iterrows():
+            lat = _to_float(r.get("Lat"))
+            lon = _to_float(r.get("Lon"))
+            if lat is None or lon is None:
+                continue
+            name = str(r.get("Name", "WPT"))
+            alt_m = alt_to_meters(r.get("Alt"), "ft")
+            lst.append({"name": name, "lat": float(lat), "lon": float(lon), "alt_m": alt_m})
+        routes[aerovia] = lst
+    return routes
+
 # =========================
 # UI (Streamlit)
 # =========================
@@ -460,6 +571,11 @@ def main_cli():
 def run_streamlit_app():
     st.set_page_config(page_title="Airway Builder", layout="wide")
     st.title("🛫 Airway Builder (KML)")
+
+    if "enr_points" not in st.session_state:
+        st.session_state.enr_points = load_enr_csv("ENR4_4_CR_2025-05-07.csv")
+    if "maestro_routes" not in st.session_state:
+        st.session_state.maestro_routes = load_maestro_csv("aerovias_maestro.csv")
 
     with st.sidebar:
         st.header("Opciones generales")
@@ -649,16 +765,20 @@ def run_streamlit_app():
 
     with colx:
         if st.button("Generar KML"):
-            # puntos = igual a la ruta (también puedes duplicar como puntos)
-            points_rows = [
-                {"name": r["name"], "lat": r["lat"], "lon": r["lon"], "alt_m": r["alt_m"], "extra": {}}
-                for r in rows
-            ]
-            kml = build_kml(
-                points_rows,
+            enr_pts = st.session_state.get("enr_points", [])
+            maestro_routes = st.session_state.get("maestro_routes", {})
+            maestro_pts = [p for pts in maestro_routes.values() for p in pts]
+            route_dict = {}
+            if rows:
+                route_dict["Ruta manual"] = rows
+            route_dict.update(maestro_routes)
+            points_lists = [enr_pts, maestro_pts, rows]
+            kml = build_kml_multi(
+                points_lists,
+                route_dict,
                 points_alt_mode=pt_alt_mode, extrude_points=extrude_pts,
-                route_rows=rows, route_alt_mode=rt_alt_mode,
-                route_color=rt_color, route_width=rt_width, extrude_route=extrude_route
+                route_alt_mode=rt_alt_mode,
+                route_color=rt_color, route_width=rt_width, extrude_route=extrude_route,
             )
             st.success("KML generado.")
             st.download_button("📥 Descargar KML", kml, file_name="aerovia.kml", mime="application/vnd.google-earth.kml+xml")
